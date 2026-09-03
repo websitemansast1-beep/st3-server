@@ -219,6 +219,20 @@ const updateAdminPassword = (id, passwordHash) => callGas('updateAdminPassword',
 const getStudentByCode = (code) => callGas('getStudentByCode', { code });
 const uploadFile = (payload) => callGas('uploadFile', payload);
 const deleteFile = (fileId) => callGas('deleteFile', { fileId });
+// Converts an EXISTING Drive file (referenced only by its file ID, e.g.
+// extracted from a pasted share link) into a Google Slides copy — same
+// conversion uploadFile() does automatically for files uploaded through
+// this platform, but for a file that already lives in someone's own
+// Drive. Throws if the Advanced Drive API isn't enabled, the file isn't
+// accessible, or it isn't a convertible Office format — callers should
+// catch this and fall back to the plain file-preview URL.
+const convertToSlides = (fileId) => callGas('convertToSlides', { fileId });
+// Exports every slide of a converted Google Slides file as standalone
+// image files in Drive (see driveGetSlideImages in DriveUpload.gs) and
+// returns their URLs. This is a slow, quota-limited operation (one Slides
+// API call per slide), so callers should cache the result on the
+// Presentations record rather than calling this on every page view.
+const getSlideImages = (slidesId) => callGas('getSlideImages', { slidesId });
 const generateCodes = (unitId, count, prefix) => callGas('generateCodes', { unitId, count, prefix });
 const getSettings = () => callGas('getSettings');
 const updateSetting = (key, value) => callGas('updateSetting', { key, value });
@@ -282,5 +296,6 @@ function getLastGasError() { return lastGasError; }
 module.exports = {
   callGas, getAll, getById, find, insert, update, remove, batchInsert, batchUpdate, replaceMatching,
   getAdminByUsername, countAdmins, insertAdmin, updateAdminPassword, getStudentByCode, uploadFile, deleteFile,
+  convertToSlides, getSlideImages,
   generateCodes, getSettings, updateSetting, publishExamResults_, getGasConcurrencyStats
 };
