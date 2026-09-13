@@ -1,4 +1,3 @@
-```js
 const gas = require('../services/gasClient');
 const { getDb, COLLECTION_MAP } = require('../services/firestoreClient');
 
@@ -24,42 +23,54 @@ const ALL_TABLES = [
 ];
 
 const args = process.argv.slice(2);
-const DRY_RUN = args.includes('--dry-run');
-const VALIDATE_ONLY = args.includes('--validate');
-const OVERWRITE = args.includes('--overwrite');
 
-const tablesArg = args.find((a) => a.startsWith('--tables='));
+const dryRun = args.includes('--dry-run');
+const validateOnly = args.includes('--validate');
+const overwrite = args.includes('--overwrite');
 
-const TABLES = tablesArg
+const tablesArg = args.find(x => x.startsWith('--tables='));
+const selectedTables = tablesArg
   ? tablesArg
-      .replace('--tables=', '')
+      .split('=')[1]
       .split(',')
-      .map((t) => t.trim())
+      .map(x => x.trim())
       .filter(Boolean)
   : ALL_TABLES;
 
 function chunk_(arr, size) {
-  const out = [];
+  const result = [];
 
   for (let i = 0; i < arr.length; i += size) {
-    out.push(arr.slice(i, i + size));
+    result.push(arr.slice(i, i + size));
   }
 
-  return out;
+  return result;
 }
 
 function docIdFor_(table, record) {
-  if (table === 'Settings' && record.key) {
+  if (table === 'Settings') {
+    if (!record.key) {
+      throw new Error(
+        'Settings row has no "key" field: ' + JSON.stringify(record)
+      );
+    }
+
     return String(record.key);
   }
 
-  if (table === 'Codes' && record.code) {
+  if (table === 'Codes') {
+    if (!record.code) {
+      throw new Error(
+        'Codes row has no "code" field: ' + JSON.stringify(record)
+      );
+    }
+
     return String(record.code);
   }
 
   if (!record.id) {
     throw new Error(
-      `Row in ${table} has no "id" field: ${JSON.stringify(record)}`
+      'Row in ' + table + ' has no "id" field: ' + JSON.stringify(record)
     );
   }
 
@@ -70,347 +81,327 @@ async function readTable_(table) {
   try {
     const rows = await gas.getAll(table);
 
-    return {
-      ok: true,
-      rows
-    };
-  } catch (err) {
-    const status = err.response?.status || '';
-    const data = err.response?.data || err.message;
+    if (!Array.isArray(rows)) {
+      throw new Error(
+        'Google Sheets returned invalid data for ' +
+          table +
+          ': ' +
+          JSON.stringify(rows)
+      );
+    }
 
+    return rows;
+  } catch (error) {
     console.error(
-      `  ERROR reading ${table}:`,
-      status,
-      data
+      '  Failed reading ' +
+        table +
+        ': ' +
+        (error.response?.data || error.message || error)
     );
 
-    return {
-      ok: false,
-      rows: [],
-      error: err.message
-    };
+    throw error;
   }
 }
 
 async function migrateTable(table) {
+  console.log('');
+  console.log('▶ ' + table);
+
+  const rows = await readTable_(table);
+
+  console.log('  read ' + rows.length + ' row(s) from Google Sheets');
+
   const collectionName = COLLECTION_MAP[table];
 
   if (!collectionName) {
-    console.warn(
-      `  Skipping "${table}" because it is not in COLLECTION_MAP.`
+    throw new Error(
+      'No Firestore collection mapping found for table: ' + table
     );
-
-    return {
-      table,
-      read: 0,
-      written: 0,
-      skipped: 0,
-      errors: ['Missing COLLECTION_MAP entry']
-    };
   }
-
-  console.log(`\n▶ ${table}`);
-
-  const result = await readTable_(table);
-
-  if (!result.ok) {
-    console.log(
-      `  Skipping ${table} because it could not be read.`
-    );
-
-    return {
-      table,
-      read: 0,
-      written: 0,
-      skipped: 0,
-      errors: [result.error]
-    };
-  }
-
-  const rows = result.rows;
 
   console.log(
-    `  read ${rows.length} row(s) from Google Sheets`
+    '  Firestore collection: "' + collectionName + '"'
   );
 
-  if (DRY_RUN) {
+  if (rows.length === 0) {
+    console.log('  nothing to migrate');
+    return {
+      table,
+      read: 0,
+      written: 0,
+      skipped: 0
+    };
+  }
+
+  if (dryRun) {
     console.log(
-      `  [dry-run] would write ${rows.length} document(s) to Firestore collection "${collectionName}"`
+      '  [dry-run] would write up to ' +
+        rows.length +
+        ' document(s) to Firestore collection "' +
+        collectionName +
+        '"'
     );
 
-    if (rows[0]) {
-      console.log(
-        `  [dry-run] sample row:`,
-        JSON.stringify(rows[0]).slice(0, 500)
-      );
-    }
+    console.log(
+      '  [dry-run] sample row: ' +
+        JSON.stringify(rows[0]).slice(0, 1000)
+    );
 
     return {
       table,
       read: rows.length,
       written: 0,
-      skipped: 0,
-      errors: []
+      skipped: 0
     };
   }
 
   const db = getDb();
-  const coll = db.collection(collectionName);
+  const collection = db.collection(collectionName);
 
   let existingIds = new Set();
 
-  if (!OVERWRITE) {
-    const existingSnap = await coll.get();
+  if (!overwrite) {
+    console.log('  checking existing Firestore documents...');
+
+    const existingSnapshot = await collection.get();
 
     existingIds = new Set(
-      existingSnap.docs.map((doc) => doc.id)
+      existingSnapshot.docs.map(doc => doc.id)
+    );
+
+    console.log(
+      '  found ' + existingIds.size + ' existing document(s)'
     );
   }
 
-  const errors = [];
   let written = 0;
   let skipped = 0;
 
-  const toWrite = [];
+  const batches = chunk_(rows, 500);
 
-  for (const record of rows) {
-    let id;
-
-    try {
-      id = docIdFor_(table, record);
-    } catch (err) {
-      errors.push(err.message);
-      continue;
-    }
-
-    if (!OVERWRITE && existingIds.has(id)) {
-      skipped++;
-      continue;
-    }
-
-    toWrite.push({
-      id,
-      record
-    });
-  }
-
-  for (const group of chunk_(toWrite, 500)) {
+  for (const batchRows of batches) {
     const batch = db.batch();
 
-    for (const item of group) {
-      const id = item.id;
-      const record = item.record;
+    let batchWriteCount = 0;
 
-      const rest = {
-        ...record
-      };
+    for (const record of batchRows) {
+      try {
+        const docId = docIdFor_(table, record);
 
-      delete rest.id;
-
-      batch.set(
-        coll.doc(id),
-        rest,
-        {
-          merge: OVERWRITE
+        if (!overwrite && existingIds.has(docId)) {
+          skipped++;
+          continue;
         }
-      );
+
+        const ref = collection.doc(docId);
+
+        batch.set(
+          ref,
+          {
+            ...record,
+            _migratedFrom: table,
+            _migratedAt: new Date().toISOString()
+          },
+          {
+            merge: true
+          }
+        );
+
+        batchWriteCount++;
+      } catch (error) {
+        console.error(
+          '  skipped row: ' +
+            (error.message || error)
+        );
+
+        skipped++;
+      }
     }
 
-    await batch.commit();
+    if (batchWriteCount > 0) {
+      await batch.commit();
+      written += batchWriteCount;
+    }
 
-    written += group.length;
-
-    process.stdout.write(
-      `  written ${written}/${toWrite.length}\r`
-    );
-  }
-
-  if (toWrite.length > 0) {
     console.log(
-      `  written ${written}/${toWrite.length}`
+      '  written ' +
+        written +
+        '/' +
+        rows.length +
+        ' | skipped ' +
+        skipped
     );
-  }
-
-  if (skipped > 0) {
-    console.log(
-      `  skipped ${skipped} already-migrated document(s)`
-    );
-  }
-
-  if (errors.length > 0) {
-    console.log(
-      `  WARNING: ${errors.length} row(s) had errors`
-    );
-
-    errors
-      .slice(0, 10)
-      .forEach((error) => {
-        console.log(`     - ${error}`);
-      });
   }
 
   return {
     table,
     read: rows.length,
     written,
-    skipped,
-    errors
+    skipped
   };
 }
 
 async function validateTable(table) {
-  const collectionName = COLLECTION_MAP[table];
-
-  if (!collectionName) {
-    return {
-      table,
-      sheets: 0,
-      firestore: 0,
-      match: true,
-      skipped: true
-    };
-  }
+  console.log('');
+  console.log('▶ Validate ' + table);
 
   try {
-    const sheetsRows = await gas.getAll(table);
+    const rows = await readTable_(table);
 
-    const firestoreSnap = await getDb()
-      .collection(collectionName)
-      .count()
-      .get();
+    const collectionName = COLLECTION_MAP[table];
 
-    const firestoreCount =
-      firestoreSnap.data().count;
+    if (!collectionName) {
+      throw new Error(
+        'No Firestore collection mapping found for table: ' + table
+      );
+    }
+
+    const db = getDb();
+    const snapshot = await db.collection(collectionName).get();
+
+    console.log(
+      '  Sheets: ' +
+        rows.length +
+        ' row(s)'
+    );
+
+    console.log(
+      '  Firestore: ' +
+        snapshot.size +
+        ' document(s)'
+    );
+
+    if (rows.length === snapshot.size) {
+      console.log('  OK');
+    } else {
+      console.log('  COUNT MISMATCH');
+    }
 
     return {
       table,
-      sheets: sheetsRows.length,
-      firestore: firestoreCount,
-      match: sheetsRows.length === firestoreCount
+      sheets: rows.length,
+      firestore: snapshot.size,
+      match: rows.length === snapshot.size
     };
-  } catch (err) {
+  } catch (error) {
+    console.error(
+      '  validation failed: ' +
+        (error.response?.data || error.message || error)
+    );
+
     return {
       table,
-      sheets: 0,
-      firestore: 0,
-      match: false,
-      error: err.message
+      error: error.message || String(error)
     };
   }
 }
 
 async function main() {
+  console.log('');
   console.log('='.repeat(70));
   console.log('Sheets -> Firestore migration');
-
-  let mode = 'LIVE (skip existing)';
-
-  if (VALIDATE_ONLY) {
-    mode = 'VALIDATE ONLY (no writes)';
-  } else if (DRY_RUN) {
-    mode = 'DRY RUN (no writes)';
-  } else if (OVERWRITE) {
-    mode = 'LIVE (overwrite existing)';
-  }
-
-  console.log('Mode:', mode);
-  console.log('Tables:', TABLES.join(', '));
+  console.log(
+    validateOnly
+      ? 'Mode: VALIDATE'
+      : dryRun
+      ? 'Mode: DRY RUN (no writes)'
+      : overwrite
+      ? 'Mode: MIGRATE + OVERWRITE'
+      : 'Mode: MIGRATE'
+  );
+  console.log('Tables: ' + selectedTables.join(', '));
   console.log('='.repeat(70));
 
-  if (VALIDATE_ONLY) {
-    const results = [];
+  const results = [];
 
-    for (const table of TABLES) {
-      console.log(`\nChecking ${table}...`);
-
-      const result = await validateTable(table);
-
-      results.push(result);
-    }
-
-    console.log('\nTable'.padEnd(20), 'Sheets'.padEnd(10), 'Firestore'.padEnd(10), 'Match');
-
-    for (const result of results) {
-      if (result.skipped) {
-        continue;
-      }
-
-      if (result.error) {
-        console.log(
-          result.table.padEnd(20),
-          'ERROR'.padEnd(10),
-          '-'.padEnd(10),
-          'ERROR'
-        );
-
-        continue;
-      }
-
-      console.log(
-        result.table.padEnd(20),
-        String(result.sheets).padEnd(10),
-        String(result.firestore).padEnd(10),
-        result.match ? 'OK' : 'MISMATCH'
-      );
-    }
-
-    console.log('\nValidation finished.');
-    return;
-  }
-
-  const summary = [];
-
-  for (const table of TABLES) {
+  for (const table of selectedTables) {
     try {
-      const result = await migrateTable(table);
-
-      summary.push(result);
-    } catch (err) {
+      if (validateOnly) {
+        const result = await validateTable(table);
+        results.push(result);
+      } else {
+        const result = await migrateTable(table);
+        results.push(result);
+      }
+    } catch (error) {
+      console.error('');
       console.error(
-        `\nERROR migrating ${table}:`,
-        err.message
+        '❌ ' +
+          table +
+          ' failed: ' +
+          (error.response?.data || error.message || error)
       );
 
-      summary.push({
+      results.push({
         table,
-        read: 0,
-        written: 0,
-        skipped: 0,
-        errors: [err.message]
+        error: error.message || String(error)
       });
 
       console.log(
-        'Continuing with the next table...'
+        '  continuing with next table...'
       );
     }
   }
 
-  console.log('\n' + '='.repeat(70));
+  console.log('');
+  console.log('='.repeat(70));
   console.log('SUMMARY');
   console.log('='.repeat(70));
 
-  for (const result of summary) {
-    console.log(
-      `${result.table.padEnd(18)} read=${String(result.read).padEnd(6)} written=${String(result.written).padEnd(6)} skipped=${String(result.skipped).padEnd(6)} errors=${result.errors.length}`
-    );
+  for (const result of results) {
+    if (validateOnly) {
+      if (result.error) {
+        console.log(
+          '❌ ' +
+            result.table +
+            ': ' +
+            result.error
+        );
+      } else {
+        console.log(
+          (result.match ? '✅ ' : '⚠️ ') +
+            result.table +
+            ': Sheets=' +
+            result.sheets +
+            ' Firestore=' +
+            result.firestore
+        );
+      }
+    } else {
+      if (result.error) {
+        console.log(
+          '❌ ' +
+            result.table +
+            ': ' +
+            result.error
+        );
+      } else {
+        console.log(
+          '✅ ' +
+            result.table +
+            ': read=' +
+            result.read +
+            ', written=' +
+            result.written +
+            ', skipped=' +
+            result.skipped
+        );
+      }
+    }
   }
 
-  if (!DRY_RUN) {
-    console.log('\nGoogle Sheets has NOT been modified.');
-    console.log('Migration finished.');
-  }
+  console.log('='.repeat(70));
+  console.log('');
 }
 
 main()
-  .then(() => {
-    process.exit(0);
-  })
-  .catch((err) => {
+  .then(() => process.exit(0))
+  .catch(error => {
+    console.error('');
     console.error(
-      '\nMigration failed:',
-      err.message
+      'FATAL ERROR:',
+      error.message || error
     );
 
     process.exit(1);
   });
-```
