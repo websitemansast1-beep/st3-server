@@ -2,7 +2,7 @@ const express = require('express');
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 const asyncHandler = require('../utils/asyncHandler');
-const gas = require('../services/gasClient');
+const gas = require('../services/firestoreClient');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();

@@ -4,10 +4,26 @@ const crypto = require('crypto');
 
 // Validate critical env vars
 const missing = [];
+// GAS_* is still required: file/Drive operations (upload, delete, convert
+// to Slides) remain on Google Apps Script + Drive in this phase of the
+// migration — only the DATABASE moved to Firestore. See MIGRATION_NOTES.md.
 if (!process.env.GAS_ENDPOINT_URL) missing.push('GAS_ENDPOINT_URL');
 if (!process.env.GAS_API_KEY) missing.push('GAS_API_KEY');
 if (!process.env.JWT_ACCESS_SECRET) missing.push('JWT_ACCESS_SECRET');
 if (!process.env.JWT_REFRESH_SECRET) missing.push('JWT_REFRESH_SECRET');
+
+// Firebase Admin credentials: either the single FIREBASE_SERVICE_ACCOUNT
+// blob, or the three separate PROJECT_ID/CLIENT_EMAIL/PRIVATE_KEY vars.
+// This is validated here (so misconfiguration is visible on boot, in the
+// same log block as everything else) but firestoreClient.js is what
+// actually reads and uses them — never logged, never duplicated here.
+const hasFirebaseServiceAccount = !!process.env.FIREBASE_SERVICE_ACCOUNT;
+const hasFirebaseTriple = !!(
+  process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY
+);
+if (!hasFirebaseServiceAccount && !hasFirebaseTriple) {
+  missing.push('FIREBASE_SERVICE_ACCOUNT (or FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY)');
+}
 
 if (missing.length > 0) {
   console.error('');

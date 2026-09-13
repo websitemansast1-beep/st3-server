@@ -1,4 +1,4 @@
-const gas = require('./gasClient');
+const gas = require('./firestoreClient');
 const { rankAttempts } = require('../utils/ranking');
 
 /**

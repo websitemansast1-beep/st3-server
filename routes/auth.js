@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const asyncHandler = require('../utils/asyncHandler');
-const gas = require('../services/gasClient');
+const gas = require('../services/firestoreClient');
 const { signAccessToken, signRefreshToken, verifyRefreshToken, requireAuth, requireRole } = require('../middleware/auth');
 const config = require('../config/config');
 const { withLock } = require('../utils/idempotency');

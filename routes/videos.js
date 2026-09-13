@@ -1,6 +1,7 @@
 const express = require('express');
 const asyncHandler = require('../utils/asyncHandler');
-const gas = require('../services/gasClient');
+const gas = require('../services/gasClient'); // Drive only (deleteFile below)
+const db = require('../services/firestoreClient');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { assertStudentHasUnitAccess } = require('../utils/contentAccess');
 
@@ -8,13 +9,13 @@ const router = express.Router();
 
 // ---------- Student-facing (auth required, any role) ----------
 router.get('/unit/:unitId', requireAuth, asyncHandler(async (req, res) => {
-  const videos = await gas.find('Videos', { unitId: req.params.unitId });
+  const videos = await db.find('Videos', { unitId: req.params.unitId });
   videos.sort((a, b) => (parseFloat(a.order) || 0) - (parseFloat(b.order) || 0));
   res.json({ ok: true, data: videos.filter((v) => req.user.role === 'admin' || v.status === 'published') });
 }));
 
 router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
-  const video = await gas.getById('Videos', req.params.id);
+  const video = await db.getById('Videos', req.params.id);
   if (!video) return res.status(404).json({ ok: false, error: 'Video not found' });
   await assertStudentHasUnitAccess(req, video);
   res.json({ ok: true, data: video });
@@ -27,7 +28,7 @@ router.post('/:id/progress', requireAuth, requireRole('student'), asyncHandler(a
   const videoId = req.params.id;
   const studentId = req.user.id;
 
-  const existing = (await gas.find('VideoProgress', { studentId, videoId }))[0];
+  const existing = (await db.find('VideoProgress', { studentId, videoId }))[0];
   const now = new Date().toISOString();
   const pct = Math.min(100, Math.max(0, parseFloat(watchPercentage) || 0));
   let status = 'watching';
@@ -41,11 +42,11 @@ router.post('/:id/progress', requireAuth, requireRole('student'), asyncHandler(a
       lastUpdatedAt: now,
       finishedAt: status === 'finished' && !existing.finishedAt ? now : existing.finishedAt
     };
-    const updated = await gas.update('VideoProgress', existing.id, patch);
+    const updated = await db.update('VideoProgress', existing.id, patch);
     return res.json({ ok: true, data: updated });
   }
 
-  const created = await gas.insert('VideoProgress', {
+  const created = await db.insert('VideoProgress', {
     studentId, videoId, status, watchPercentage: pct, watchSeconds: watchSeconds || 0,
     startedAt: now, lastUpdatedAt: now, finishedAt: status === 'finished' ? now : ''
   });
@@ -53,7 +54,7 @@ router.post('/:id/progress', requireAuth, requireRole('student'), asyncHandler(a
 }));
 
 router.get('/:id/my-progress', requireAuth, requireRole('student'), asyncHandler(async (req, res) => {
-  const existing = (await gas.find('VideoProgress', { studentId: req.user.id, videoId: req.params.id }))[0];
+  const existing = (await db.find('VideoProgress', { studentId: req.user.id, videoId: req.params.id }))[0];
   res.json({ ok: true, data: existing || null });
 }));
 
@@ -63,7 +64,7 @@ router.post('/', requireAuth, requireRole('admin'), asyncHandler(async (req, res
   if (!unitId || !title || !driveUrl) {
     return res.status(400).json({ ok: false, error: 'unitId, title and driveUrl are required' });
   }
-  const video = await gas.insert('Videos', {
+  const video = await db.insert('Videos', {
     unitId, lessonId: lessonId || '', title, driveFileId: driveFileId || '',
     driveUrl, order: order || 0, durationSeconds: durationSeconds || 0, status: 'published'
   });
@@ -71,26 +72,26 @@ router.post('/', requireAuth, requireRole('admin'), asyncHandler(async (req, res
 }));
 
 router.patch('/:id', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
-  const updated = await gas.update('Videos', req.params.id, req.body);
+  const updated = await db.update('Videos', req.params.id, req.body);
   if (!updated) return res.status(404).json({ ok: false, error: 'Video not found' });
   res.json({ ok: true, data: updated });
 }));
 
 router.delete('/:id', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
-  const video = await gas.getById('Videos', req.params.id);
+  const video = await db.getById('Videos', req.params.id);
   if (video && video.driveFileId) await gas.deleteFile(video.driveFileId);
-  const result = await gas.remove('Videos', req.params.id);
+  const result = await db.remove('Videos', req.params.id);
   res.json({ ok: true, data: result });
 }));
 
 // Teacher dashboard: didn't-watch / watching / finished breakdown for a video
 router.get('/:id/stats', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
   const [progressRows, students] = await Promise.all([
-    gas.find('VideoProgress', { videoId: req.params.id }),
-    gas.getAll('Students')
+    db.find('VideoProgress', { videoId: req.params.id }),
+    db.getAll('Students')
   ]);
   const watchedIds = new Set(progressRows.map((p) => p.studentId));
-  const video = await gas.getById('Videos', req.params.id);
+  const video = await db.getById('Videos', req.params.id);
   const relevantStudents = students.filter((s) => (s.unitIds || '').includes(video.unitId));
 
   res.json({

@@ -1,6 +1,6 @@
 const express = require('express');
 const asyncHandler = require('../utils/asyncHandler');
-const gas = require('../services/gasClient');
+const gas = require('../services/firestoreClient');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();

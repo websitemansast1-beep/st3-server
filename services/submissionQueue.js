@@ -47,7 +47,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../config/config');
-const gas = require('./gasClient');
+const gas = require('./firestoreClient');
 
 const {
   batchSize: BATCH_SIZE,

@@ -57,12 +57,31 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/loadtest', loadtestRoutes);
 
 // ---------- Serve the frontend (admin dashboard + student site) ----------
+// This expects a sibling `frontend/` directory (../frontend relative to this
+// file) containing `admin/` and `student/` sub-apps. That layout only exists
+// when this backend is deployed as a subfolder of a monorepo that also
+// contains `frontend/` at the same level. If this backend is deployed as
+// its OWN repo (no sibling frontend folder — e.g. this is the entire
+// contents of the `st2server` repo), `frontendRoot` will not exist.
+//
+// Guarded with fs.existsSync so a missing frontend folder degrades to
+// "API-only mode" (404 on non-/api routes) instead of crashing every
+// request with ENOENT, or being mistaken by Railway's build detection for
+// this being a static site. If you deploy frontend separately (its own
+// Railway/Vercel/Netlify static site), that is the normal, expected case —
+// this block simply won't do anything.
+const fs = require('fs');
 const frontendRoot = path.join(__dirname, '..', 'frontend');
-app.use('/admin', express.static(path.join(frontendRoot, 'admin')));
-app.use('/', express.static(path.join(frontendRoot, 'student')));
+if (fs.existsSync(frontendRoot)) {
+  app.use('/admin', express.static(path.join(frontendRoot, 'admin')));
+  app.use('/', express.static(path.join(frontendRoot, 'student')));
 
-app.get('/admin*', (req, res) => res.sendFile(path.join(frontendRoot, 'admin', 'index.html')));
-app.get('*', (req, res) => res.sendFile(path.join(frontendRoot, 'student', 'index.html')));
+  app.get('/admin*', (req, res) => res.sendFile(path.join(frontendRoot, 'admin', 'index.html')));
+  app.get('*', (req, res) => res.sendFile(path.join(frontendRoot, 'student', 'index.html')));
+} else {
+  console.warn(`[server] No frontend/ folder found at ${frontendRoot} — running API-only (this is expected if the frontend is deployed separately).`);
+  app.get('*', (req, res) => res.status(404).json({ ok: false, error: 'Not found (API-only deployment — no frontend bundled)' }));
+}
 
 // ---------- Error handler ----------
 app.use((err, req, res, next) => {

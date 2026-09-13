@@ -1,4 +1,4 @@
-const gas = require('../services/gasClient');
+const gas = require('../services/firestoreClient');
 
 /**
  * Videos/Books/Presentations were only ever filtered by unit access in the

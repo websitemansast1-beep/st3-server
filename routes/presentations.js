@@ -1,19 +1,20 @@
 const express = require('express');
 const asyncHandler = require('../utils/asyncHandler');
-const gas = require('../services/gasClient');
+const gas = require('../services/gasClient'); // Drive only (getSlideImages / convertToSlides / deleteFile below)
+const db = require('../services/firestoreClient');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { assertStudentHasUnitAccess } = require('../utils/contentAccess');
 const router = express.Router();
 
 // ---------- Student-facing (auth required, any role) ----------
 router.get('/unit/:unitId', requireAuth, asyncHandler(async (req, res) => {
-  const items = await gas.find('Presentations', { unitId: req.params.unitId });
+  const items = await db.find('Presentations', { unitId: req.params.unitId });
   items.sort((a, b) => (parseFloat(a.order) || 0) - (parseFloat(b.order) || 0));
   res.json({ ok: true, data: items.filter((p) => req.user.role === 'admin' || p.status === 'published') });
 }));
 
 router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
-  const item = await gas.getById('Presentations', req.params.id);
+  const item = await db.getById('Presentations', req.params.id);
   if (!item) return res.status(404).json({ ok: false, error: 'Presentation not found' });
   await assertStudentHasUnitAccess(req, item);
   res.json({ ok: true, data: item });
@@ -28,7 +29,7 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
 // was created before this feature existed, or POST / below couldn't
 // generate them at creation time), or when an admin forces a refresh.
 router.get('/:id/slides', requireAuth, asyncHandler(async (req, res) => {
-  const item = await gas.getById('Presentations', req.params.id);
+  const item = await db.getById('Presentations', req.params.id);
   if (!item) return res.status(404).json({ ok: false, error: 'Presentation not found' });
   await assertStudentHasUnitAccess(req, item);
 
@@ -50,7 +51,7 @@ router.get('/:id/slides', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const result = await gas.getSlideImages(item.slidesId);
-  await gas.update('Presentations', item.id, { slideImages: JSON.stringify(result.slideImages) });
+  await db.update('Presentations', item.id, { slideImages: JSON.stringify(result.slideImages) });
   res.json({ ok: true, data: { slideImages: result.slideImages, cached: false } });
 }));
 
@@ -83,7 +84,7 @@ router.post('/', requireAuth, requireRole('admin'), asyncHandler(async (req, res
     }
   }
 
-  const item = await gas.insert('Presentations', record);
+  const item = await db.insert('Presentations', record);
   res.status(201).json({ ok: true, data: item });
 }));
 
@@ -108,15 +109,15 @@ router.post('/convert-slides', requireAuth, requireRole('admin'), asyncHandler(a
 }));
 
 router.patch('/:id', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
-  const updated = await gas.update('Presentations', req.params.id, req.body);
+  const updated = await db.update('Presentations', req.params.id, req.body);
   if (!updated) return res.status(404).json({ ok: false, error: 'Presentation not found' });
   res.json({ ok: true, data: updated });
 }));
 
 router.delete('/:id', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
-  const item = await gas.getById('Presentations', req.params.id);
+  const item = await db.getById('Presentations', req.params.id);
   if (item && item.driveFileId) await gas.deleteFile(item.driveFileId);
-  const result = await gas.remove('Presentations', req.params.id);
+  const result = await db.remove('Presentations', req.params.id);
   res.json({ ok: true, data: result });
 }));
 
